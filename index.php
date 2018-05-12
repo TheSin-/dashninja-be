@@ -1175,7 +1175,7 @@ $app->get('/masternodes/pubkeys', function() use ($app,&$mysqli) {
 
   $request = $app->request;
 
-  if (0 == 1 && ((!array_key_exists('CONTENT_LENGTH',$_SERVER) || (intval($_SERVER['CONTENT_LENGTH']) != 0))) {
+  if (0 == 1 && (!array_key_exists('CONTENT_LENGTH',$_SERVER) || (intval($_SERVER['CONTENT_LENGTH']) != 0))) {
     //Change the HTTP status
     $response->setStatusCode(400, "Bad Request");
     //Send errors to the client
