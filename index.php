@@ -143,7 +143,7 @@ $router = $app->getRouter();
 //$router->setUriSource(\Phalcon\Mvc\Router::URI_SOURCE_SERVER_REQUEST_URI);
 
 // ============================================================================
-// BALANCES (for dmnbalance)
+// BALANCES (for tmnbalance)
 // ----------------------------------------------------------------------------
 // End-point to retrieve all pubkeys and last updates
 // HTTP method:
@@ -198,7 +198,7 @@ $app->get('/balances', function() use ($app,&$mysqli) {
 });
 
 // ============================================================================
-// BALANCES (Reporting for dmnbalance)
+// BALANCES (Reporting for tmnbalance)
 // ----------------------------------------------------------------------------
 // End-point for the balance report
 // HTTP method:
@@ -265,7 +265,7 @@ $app->post('/balances', function() use ($app,&$mysqli) {
 });
 
 // ============================================================================
-// BLOCKSGAPS (data for dmnblockdegapper)
+// BLOCKSGAPS (data for tmnblockdegapper)
 // ----------------------------------------------------------------------------
 // End-point for the balance report
 // HTTP method:
@@ -348,7 +348,7 @@ $app->get('/blocksgaps', function() use ($app,&$mysqli) {
 });
 
 // ============================================================================
-// BLOCKS (Reporting for dmnblockparser)
+// BLOCKS (Reporting for tmnblockparser)
 // ----------------------------------------------------------------------------
 // End-point for the balance report
 // HTTP method:
@@ -685,7 +685,7 @@ EOT;
 });
 
 // ============================================================================
-// BUDGETS EXPECTED (for dmnblockparser)
+// BUDGETS EXPECTED (for tmnblockparser)
 // ----------------------------------------------------------------------------
 // End-point to retrieve all expected superblocks
 // HTTP method:
@@ -766,7 +766,7 @@ $app->get('/budgetsexpected', function() use ($app,&$mysqli) {
 });
 
 // ============================================================================
-// SUPERBLOCK PAYMENTS EXPECTED (for dmnblockparser)
+// SUPERBLOCK PAYMENTS EXPECTED (for tmnblockparser)
 // ----------------------------------------------------------------------------
 // End-point to retrieve all expected superblocks payments (v12.1+)
 // HTTP method:
@@ -897,6 +897,187 @@ function trcninja_masternodes_get($mysqli, $testnet = 0, $protocol = 0) {
   return $nodes;
 }
 
+// Function to retrieve the masternode list
+function tmn_masternodes2_get($mysqli, $testnet = 0, $protocol = 0, $mnpubkeys = array(), $mnips = array(), $mnvins = array()) {
+
+    $sqlprotocol = sprintf("%d",$protocol);
+    $sqltestnet = sprintf("%d",$testnet);
+
+        // Semaphore that we are currently updating
+        touch($cachefnamupdate);
+
+        // Add selection by pubkey
+        $sqlpks = "";
+        if (count($mnpubkeys) > 0) {
+            $sqls = '';
+            foreach($mnpubkeys as $mnpubkey) {
+                if (strlen($sqls)>0) {
+                    $sqls .= ' OR ';
+                }
+                $sqls .= sprintf("cim.MasternodePubkey = '%s'",$mysqli->real_escape_string($mnpubkey));
+            }
+            $sqlpks = " AND (".$sqls.")";
+        }
+
+        // Add selection by IP:port
+        $sqlips = "";
+        if (count($mnips) > 0) {
+            $sqls = '';
+            foreach($mnips as $mnip) {
+                if (strlen($sqls)>0) {
+                    $sqls .= ' OR ';
+                }
+                $sqls .= sprintf("(cim.MasternodeIPv6 = INET6_ATON('%s') AND cim.MasternodePort = %d)",$mysqli->real_escape_string($mnip[0]),$mnip[1]);
+            }
+            $sqlips = " AND (".$sqls.")";
+        }
+
+        // Add selection by Output-Index
+        $sqlvins = "";
+        if (count($mnvins) > 0) {
+            $sqls = '';
+            foreach($mnvins as $mnvin) {
+                $mnoutput = explode('-',$mnvin);
+                if (strlen($sqls)>0) {
+                    $sqls .= ' OR ';
+                }
+                $sqls .= sprintf("(cim.MasternodeOutputHash = '%s' AND cim.MasternodeOutputIndex = %d)",$mysqli->real_escape_string($mnoutput[0]),$mnoutput[1]);
+            }
+            $sqlvins = " AND (".$sqls.")";
+        }
+
+        $sql = <<<EOT
+SELECT
+    cim.MasternodeOutputHash MasternodeOutputHash,
+    cim.MasternodeOutputIndex MasternodeOutputIndex,
+    inet6_ntoa(cim.MasternodeIPv6) AS MasternodeIP,
+    cim.MasternodeTor MasternodeTor,
+    cim.MasternodePort MasternodePort,
+    cim.MasternodePubkey MasternodePubkey,
+    cim.MasternodeProtocol MasternodeProtocol,
+    MasternodeLastSeen,
+    MasternodeActiveSeconds,
+    MasternodeLastPaid,
+    ActiveCount,
+    InactiveCount,
+    UnlistedCount,
+    cimlp.MNLastPaidBlock MasternodeLastPaidBlockHeight,
+    cib.BlockTime MasternodeLastPaidBlockTime,
+    cib.BlockMNValue MasternodeLastPaidBlockAmount
+FROM
+    (cmd_info_masternode2 cim,
+    cmd_info_masternode_active cima)
+    LEFT JOIN
+        cmd_info_masternode_lastpaid cimlp
+            ON (cimlp.MNTestNet = cim.MasternodeTestNet AND cimlp.MNPubKey = cim.MasternodePubkey)
+    LEFT JOIN
+        cmd_info_blocks cib
+            ON (cib.BlockTestNet = cimlp.MNTestNet AND cib.BlockId = cimlp.MNLastPaidBlock)
+WHERE
+    cim.MasternodeOutputHash = cima.MasternodeOutputHash AND
+    cim.MasternodeOutputIndex = cima.MasternodeOutputIndex AND
+    cim.MasternodeTestNet = cima.MasternodeTestNet AND
+    cim.MasternodeTestNet = $sqltestnet AND
+    cima.MasternodeProtocol = $sqlprotocol AND
+    ((ActiveCount > 0) OR (InactiveCount > 0))$sqlpks$sqlips$sqlvins
+ORDER BY MasternodeOutputHash, MasternodeOutputIndex;
+EOT;
+
+        // Execute the query
+        $numnodes = 0;
+        if ($result = $mysqli->query($sql)) {
+            $nodes = array();
+            while($row = $result->fetch_assoc()){
+                $numnodes++;
+                if (is_null($row['ActiveCount'])) {
+                    $row['ActiveCount'] = 0;
+                }
+                else {
+                    $row['ActiveCount'] = intval($row['ActiveCount']);
+                }
+                if (is_null($row['InactiveCount'])) {
+                    $row['InactiveCount'] = 0;
+                }
+                else {
+                    $row['InactiveCount'] = intval($row['InactiveCount']);
+                }
+                if (is_null($row['UnlistedCount'])) {
+                    $row['UnlistedCount'] = 0;
+                }
+                else {
+                    $row['UnlistedCount'] = intval($row['UnlistedCount']);
+                }
+                if (strlen($row['MasternodeLastSeen']) == 16) {
+                    $row['MasternodeLastSeen'] = substr($row['MasternodeLastSeen'],0,-6);
+                }
+                if (!is_null($row['MasternodeLastPaidBlockHeight'])) {
+                    $row['LastPaidFromBlocks'] = array("MNLastPaidBlock" => $row['MasternodeLastPaidBlockHeight'],
+                        "MNLastPaidTime" => $row['MasternodeLastPaidBlockTime'],
+                        "MNLastPaidAmount" => $row['MasternodeLastPaidBlockAmount']);
+                }
+                else {
+                    $row['LastPaidFromBlocks'] = false;
+                }
+                unset($row['MasternodeLastPaidBlockHeight'],$row['MasternodeLastPaidBlockTime'],$row['MasternodeLastPaidBlockAmount']);
+                $nodes[] = $row;
+            }
+        }
+        else {
+            $nodes = false;
+        }
+
+    return $nodes;
+}
+
+// Function to retrieve the masternode count
+function tmn_masternodes_count($mysqli, $testnet, &$totalmncount, &$uniquemnips) {
+
+    $protocols = array();
+        $sqlprotocols = sprintf("SELECT NodeProtocol FROM cmd_nodes cn, cmd_nodes_status cns WHERE cn.NodeId = cns.NodeId AND NodeTestnet = %d GROUP BY NodeProtocol",$testnet);
+        // Run the query
+        $result = $mysqli->query($sqlprotocols);
+        while ($row = $result->fetch_assoc()) {
+            $protocols[] = intval($row['NodeProtocol']);
+        }
+    $maxprotocol = 0;
+    $mninfo = array();
+
+    foreach ($protocols as $protocol) {
+        $mninfo[$protocol] = array("ActiveMasternodesUniqueIPs" => array(),
+            "ActiveMasternodesCount" => 0);
+        if ($protocol > $maxprotocol) {
+            $maxprotocol = $protocol;
+        }
+    }
+
+    $uniquemnips = 0;
+    $totalmncount = 0;
+
+    foreach ($protocols as $protocol) {
+        $fulllist = tmn_masternodes2_get($mysqli, $testnet, $protocol);
+         $mninfo[$protocol]["ActiveMasternodesCount"] = 0;
+         foreach ($fulllist as $masternode) {
+            if ($masternode["ActiveCount"] > 0) {
+                if (!in_array($masternode["MasternodeIP"], $mninfo[$protocol]["ActiveMasternodesUniqueIPs"])) {
+                    $mninfo[$protocol]["ActiveMasternodesUniqueIPs"][] = $masternode["MasternodeIP"];
+                }
+                $mninfo[$protocol]["ActiveMasternodesCount"]++;
+            }
+        }
+        if ($protocol == $maxprotocol) {
+            $totalmncount = $mninfo[$protocol]["ActiveMasternodesCount"];
+        }
+    }
+    foreach ($mninfo as $protocol => $mn) {
+        $mninfo[$protocol]["ActiveMasternodesUniqueIPs"] = count($mninfo[$protocol]["ActiveMasternodesUniqueIPs"]);
+    }
+
+    $uniquemnips = $mninfo[$maxprotocol]["ActiveMasternodesUniqueIPs"];
+
+    return $mninfo;
+
+}
+
 function trcmn_masternodes_count($mysqli,$testnet,&$totalmncount,&$uniquemnips) {
 
     // Retrieve the total unique IPs per protocol version
@@ -963,7 +1144,7 @@ function trcmn_masternodes_count($mysqli,$testnet,&$totalmncount,&$uniquemnips) 
 }
 
 // Function to retrieve the masternode list
-function dmn_cmd_masternodes2_get($mysqli, $testnet = 0) {
+function tmn_cmd_masternodes2_get($mysqli, $testnet = 0) {
 
     $sqltestnet = sprintf("%d",$testnet);
 
@@ -1081,7 +1262,7 @@ $app->get('/masternodes', function() use ($app,&$mysqli) {
   }
   else {
 
-    $mnlist = dmn_cmd_masternodes2_get($mysqli, $testnet);;
+    $mnlist = tmn_cmd_masternodes2_get($mysqli, $testnet);;
     $mnlisterrno = $mysqli->errno;
     $mnlisterror = $mysqli->error;
     if ($mnlist !== false) {
@@ -1299,7 +1480,7 @@ function trcninja_cmd_getnodes($mysqli,$hubid = -1,$testnet = 0) {
 }
 
 // ============================================================================
-// PING (Reporting for dmnctl status)
+// PING (Reporting for tmnctl status)
 // ----------------------------------------------------------------------------
 // End-point for the hubs to report their statuses
 // HTTP method:
@@ -1485,10 +1666,10 @@ $app->post('/ping', function() use ($app,&$mysqli) {
                            "MasternodeActiveSeconds" => $mninfo["MasternodeActiveSeconds"],
                            "MasternodeLastPaid" => $mninfo["MasternodeLastPaid"]);*/
 /*          $sql = "SELECT MasternodeOutputHash, MasternodeOutputIndex, MasternodeTestNet FROM cmd_info_masternode2";
-          $unlistedmn2 = array();
+          $unlistetmn2 = array();
           if ($result22b = $mysqli->query($sql)) {
             while($row = $result22b->fetch_assoc()){
-              $unlistedmn2[] = $row;
+              $unlistetmn2[] = $row;
             }
           }*/
 
@@ -1515,7 +1696,7 @@ $app->post('/ping', function() use ($app,&$mysqli) {
               }
               if ($mntor !== false) {
                   $mnoutputhash = $mysqli->real_escape_string($mninfo['MasternodeOutputHash']);
-                  $mninfosql2[] = sprintf("('%s', %d, %d, %d, '%s', %d, INET6_ATON('%s'), '%s', %d, %d, %d, %d)",
+                  $mninfosql2[] = sprintf("('%s', %d, %d, %d, '%s', %d, INET6_ATON('%s'), '%s', %d, %d, %d, %d, %d, '%s', '%s', '%s')",
                       $mnoutputhash,
                       $mninfo['MasternodeOutputIndex'],
                       $mninfo['MasternodeTestNet'],
@@ -1527,7 +1708,11 @@ $app->post('/ping', function() use ($app,&$mysqli) {
                       $mninfo['MasternodePort'],
                       $mninfo['MasternodeLastSeen'],
                       $mninfo['MasternodeActiveSeconds'],
-                      $mninfo['MasternodeLastPaid']
+                      $mninfo['MasternodeLastPaid'],
+                      $mninfo['MasternodeLastPaidBlock'],
+                      $mysqli->real_escape_string($mninfo['MasternodeDaemonVersion']),
+                      $mysqli->real_escape_string($mninfo['MasternodeSentinelVersion']),
+                      $mysqli->real_escape_string($mninfo['MasternodeSentinelState'])
                   );
                   $mngeoip = geoip_record_by_name($mninfo['MasternodeIP']);
                   if ($mngeoip !== FALSE) {
@@ -1551,11 +1736,14 @@ $app->post('/ping', function() use ($app,&$mysqli) {
           if (count($mninfosql2) > 0) {
             $sql = "INSERT INTO cmd_info_masternode2 (MasternodeOutputHash, MasternodeOutputIndex, MasternodeTestNet,"
                   ." MasternodeProtocol, MasternodePubkey, MasternodeIP, MasternodeIPv6, MasternodeTor, MasternodePort,"
-                  ." MasternodeLastSeen, MasternodeActiveSeconds, MasternodeLastPaid) VALUE ".implode(',',$mninfosql2)
+                  ." MasternodeLastSeen, MasternodeActiveSeconds, MasternodeLastPaid, MasternodeLastPaidBlock, MasternodeDaemonVersion,"
+                  ." MasternodeSentinelVersion, MasternodeSentinelState) VALUE ".implode(',',$mninfosql2)
                   ." ON DUPLICATE KEY UPDATE MasternodeActiveSeconds = VALUES(MasternodeActiveSeconds),"
                   ." MasternodeLastSeen = VALUES(MasternodeLastSeen), MasternodeProtocol = VALUES(MasternodeProtocol),"
                   ." MasternodePubkey = VALUES(MasternodePubkey), MasternodeIP = VALUES(MasternodeIP), MasternodeIPv6 = VALUES(MasternodeIPv6),"
-                  ." MasternodeTor = VALUES(MasternodeTor), MasternodePort = VALUES(MasternodePort), MasternodeLastPaid = VALUES(MasternodeLastPaid)";
+                  ." MasternodeTor = VALUES(MasternodeTor), MasternodePort = VALUES(MasternodePort), MasternodeLastPaid = VALUES(MasternodeLastPaid),"
+                  ." MasternodeLastPaidBlock = VALUES(MasternodeLastPaidBlock), MasternodeDaemonVersion = VALUES(MasternodeDaemonVersion),"
+                  ." MasternodeSentinelVersion = VALUES(MasternodeSentinelVersion), MasternodeSentinelState = VALUES(MasternodeSentinelState)";
 
             if ($result22 = $mysqli->query($sql)) {
                 $mninfo2info = $mysqli->info . $skipinfo;
@@ -1684,10 +1872,10 @@ $app->post('/ping', function() use ($app,&$mysqli) {
             $curnodes[intval($node['NodeTestNet'])][] = $node['NodeId'];
           }
           $sql = sprintf("SELECT MasternodeIP, MasternodePort, MNTestNet FROM cmd_info_masternode WHERE MNTestNet = %d",$istestnet);
-          $unlistedmn = array();
+          $unlistetmn = array();
           if ($result1b = $mysqli->query($sql)) {
             while($row = $result1b->fetch_assoc()){
-              $unlistedmn[] = $row;
+              $unlistetmn[] = $row;
             }
           }
 
@@ -1717,7 +1905,7 @@ $app->post('/ping', function() use ($app,&$mysqli) {
               $inlist[$nodeid][] = $mniplong.':'.$mninfo['MasternodePort'].':'.$mninfo['MNTestNet'];
             }
           }
-          foreach($unlistedmn as $mninfo) {
+          foreach($unlistetmn as $mninfo) {
             foreach($curnodes[$mninfo['MNTestNet']] as $nodeid) {
               if (array_key_exists($nodeid,$inlist) && (!in_array($mninfo['MasternodeIP'].':'.$mninfo['MasternodePort'].':'.$mninfo['MNTestNet'],$inlist[$nodeid]))) {
                 $mnlistsql[] = sprintf("(%d, %d, %d, %d, 'unlisted',-1,'')",
@@ -1743,10 +1931,10 @@ $app->post('/ping', function() use ($app,&$mysqli) {
           }
 
           $sql = sprintf("SELECT MasternodeOutputHash, MasternodeOutputIndex, MasternodeTestNet FROM cmd_info_masternode2 WHERE MasternodeTestNet = %d",$istestnet);
-          $unlistedmn2 = array();
+          $unlistetmn2 = array();
           if ($result1xb = $mysqli->query($sql)) {
             while($row = $result1xb->fetch_assoc()){
-              $unlistedmn2[] = $row;
+              $unlistetmn2[] = $row;
             }
           }
 
@@ -1773,7 +1961,7 @@ $app->post('/ping', function() use ($app,&$mysqli) {
             }
             $inlist2[$nodeid][] = $mninfo['MasternodeOutputHash']."-".$mninfo['MasternodeOutputIndex']."-".$mninfo['MasternodeTestNet'];
           }
-          foreach($unlistedmn2 as $mninfo) {
+          foreach($unlistetmn2 as $mninfo) {
             foreach($curnodes[$mninfo['MasternodeTestNet']] as $nodeid) {
               if (array_key_exists($nodeid,$inlist2) && (!in_array($mninfo['MasternodeOutputHash']."-".$mninfo['MasternodeOutputIndex']."-".$mninfo['MasternodeTestNet'],$inlist2[$nodeid]))) {
                 $mnlist2sql[] = sprintf("('%s', %d, %d, %d, 'unlisted', '')",
@@ -1832,19 +2020,10 @@ $app->post('/ping', function() use ($app,&$mysqli) {
             }
           }
 
-          $sql = "SELECT COUNT(*) MNActive FROM "
-                ."(SELECT cim.MasternodeOutputHash MasternodeOutputHash, cim.MasternodeOutputIndex MasternodeOutputIndex, COUNT(1) ActiveCount FROM "
-                ."cmd_info_masternode2_list ciml, cmd_info_masternode2 cim, (SELECT MAX(NodeProtocol) Protocol FROM "
-                .sprintf("cmd_nodes cn, cmd_nodes_status cns WHERE cn.NodeId = cns.NodeId AND cn.NodeTestNet = %d) maxprot WHERE cim.MasternodeOutputHash = ciml.MasternodeOutputHash ",$istestnet)
-                ."AND ciml.MasternodeOutputIndex = cim.MasternodeOutputIndex AND ciml.MasternodeTestNet = cim.MasternodeTestNet AND (MasternodeStatus = 'active' OR MasternodeStatus = 'current') "
-                .sprintf("AND cim.MasternodeProtocol = maxprot.Protocol AND ciml.MasterNodeTestNet = %d",$istestnet)
-                ."GROUP BY cim.MasternodeOutputHash, cim.MasternodeOutputIndex) mnactive "
-                ."WHERE ActiveCount > 0";
-
           $sqlstats2 = array();
           $activemncount = 0;
           $uniquemnips = 0;
-          trcmn_masternodes_count($mysqli,$istestnet,$activemncount,$uniquemnips);
+          tmn_masternodes_count($mysqli,$istestnet,$activemncount,$uniquemnips);
           $sqlstats2[] = sprintf("('%s','%s',%d,'trcninja')",'mnactive',$activemncount,time());
           $sqlstats2[] = sprintf("('%s','%s',%d,'trcninja')",'mnuniqiptest',$uniquemnips,time());
 
@@ -2361,7 +2540,7 @@ $app->get('/pools', function() use ($app,&$mysqli) {
 });
 
 // ============================================================================
-// PORTCHECK/CONFIG (for dmnportcheck)
+// PORTCHECK/CONFIG (for tmnportcheck)
 // ----------------------------------------------------------------------------
 // End-point to retrieve port check configuration
 // HTTP method:
@@ -2422,7 +2601,7 @@ $app->get('/portcheck/config', function() use ($app,&$mysqli) {
 });
 
 // ============================================================================
-// PORTCHECK/LIST (for dmnportcheck)
+// PORTCHECK/LIST (for tmnportcheck)
 // ----------------------------------------------------------------------------
 // End-point to retrieve port check list of nodes
 // HTTP method:
@@ -2473,7 +2652,7 @@ $app->get('/portcheck/list', function() use ($app,&$mysqli) {
 });
 
 // ============================================================================
-// PORTCHECK (Reporting for dmnportcheck)
+// PORTCHECK (Reporting for tmnportcheck)
 // ----------------------------------------------------------------------------
 // End-point for the port check report
 // HTTP method:
