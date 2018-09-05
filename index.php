@@ -1055,8 +1055,10 @@ function tmn_masternodes_count($mysqli, $testnet, &$totalmncount, &$uniquemnips)
 
     foreach ($protocols as $protocol) {
         $fulllist = tmn_masternodes2_get($mysqli, $testnet, $protocol);
-         $mninfo[$protocol]["ActiveMasternodesCount"] = 0;
-         foreach ($fulllist as $masternode) {
+
+        $mninfo[$protocol]["ActiveMasternodesCount"] = 0;
+
+        foreach ($fulllist as $masternode) {
             if ($masternode["ActiveCount"] > 0) {
                 if (!in_array($masternode["MasternodeIP"], $mninfo[$protocol]["ActiveMasternodesUniqueIPs"])) {
                     $mninfo[$protocol]["ActiveMasternodesUniqueIPs"][] = $masternode["MasternodeIP"];
@@ -1262,7 +1264,7 @@ $app->get('/masternodes', function() use ($app,&$mysqli) {
   }
   else {
 
-    $mnlist = tmn_cmd_masternodes2_get($mysqli, $testnet);;
+    $mnlist = tmn_cmd_masternodes2_get($mysqli, $testnet);
     $mnlisterrno = $mysqli->errno;
     $mnlisterror = $mysqli->error;
     if ($mnlist !== false) {
@@ -2736,7 +2738,7 @@ $app->post('/portcheck', function() use ($app,&$mysqli) {
 // ============================================================================
 // THIRDPARTIES (Reporting for trcircbot)
 // ----------------------------------------------------------------------------
-// End-point to update third parties values (USD/DRK for ex)
+// End-point to update third parties values (USD/TRC for ex)
 // HTTP method:
 //   POST
 // Parameters (JSON body):
